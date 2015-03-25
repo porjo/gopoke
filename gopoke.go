@@ -22,6 +22,7 @@ type Game struct {
 
 type Action interface {
 	GetPlayer() *Player
+	SetPlayer(*Player)
 	String() string
 }
 
@@ -47,22 +48,28 @@ type Card struct {
 }
 
 type Check struct {
-	Player *Player
+	player *Player
 }
 
 func (c Check) GetPlayer() *Player {
-	return c.Player
+	return c.player
+}
+func (c *Check) SetPlayer(p *Player) {
+	c.player = p
 }
 func (c Check) String() string {
 	return "Check"
 }
 
 type Fold struct {
-	Player *Player
+	player *Player
 }
 
 func (c Fold) GetPlayer() *Player {
-	return c.Player
+	return c.player
+}
+func (c *Fold) SetPlayer(p *Player) {
+	c.player = p
 }
 func (c Fold) String() string {
 	return "Fold"
@@ -102,17 +109,18 @@ func NewGame() *Game {
 func (g *Game) gameRoutine() {
 	// start game
 	fmt.Printf("Entering game routine\n")
+	fmt.Printf("------ Round %d -------\n", g.round)
 	play := Play{}
-	play.ValidActions = []Action{Check{}, Fold{}}
+	play.ValidActions = []Action{&Check{}, &Fold{}}
 	g.players[0].Plays <- play
 	for {
 		select {
 		case a := <-g.Action:
 
 			switch a.(type) {
-			case Check:
+			case *Check:
 				// do nothing
-			case Fold:
+			case *Fold:
 				// remove player
 			}
 
@@ -136,7 +144,7 @@ func (g *Game) gameRoutine() {
 
 			// notify next player
 			play = Play{}
-			play.ValidActions = []Action{Check{}, Fold{}}
+			play.ValidActions = []Action{&Check{}, &Fold{}}
 			fmt.Printf("game notify next player, %s\n", g.players[next].Name)
 			g.players[next].Plays <- play
 
@@ -155,33 +163,36 @@ done:
 	fmt.Printf("Ending game routine\n")
 }
 
-func (g *Game) NewRound(players []Player) ([]Player, error) {
+func (g *Game) NewRound() ([]Player, error) {
+
+	if len(g.players) == 0 {
+		return nil, fmt.Errorf("Please create players first")
+	}
+
 	var playersOut []Player
 	var card Card
-	g.Action = make(chan Action, len(players))
+	g.Action = make(chan Action, len(g.players))
 	// first card
-	for _, p := range players {
+	for _, p := range g.players {
 		p.Cards = make([]Card, 0)
 		card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
 		p.Cards = append(p.Cards, card)
 	}
 
 	// second card
-	for _, p := range players {
+	for _, p := range g.players {
 		card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
 		p.Cards = append(p.Cards, card)
 		playersOut = append(playersOut, p)
 	}
-	g.players = playersOut
-	g.round++
 	go g.gameRoutine()
 	return playersOut, nil
 }
 
-func (g *Game) NewPlayer(name string) Player {
+func (g *Game) NewPlayer(name string) error {
 	p := Player{Name: name}
 	p.Plays = make(chan Play)
-	p.game = g
 	p.id = uuid.NewRandom()
-	return p
+	g.players = append(g.players, p)
+	return nil
 }

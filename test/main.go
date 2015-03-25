@@ -18,12 +18,11 @@ func main() {
 
 	game = gopoke.NewGame()
 
-	p1 := game.NewPlayer("bob")
-	p2 := game.NewPlayer("jane")
-	p3 := game.NewPlayer("max")
+	game.NewPlayer("bob")
+	game.NewPlayer("jane")
+	game.NewPlayer("max")
 
-	players = append(players, p1, p2, p3)
-	players, err = game.NewRound(players)
+	players, err = game.NewRound()
 	if err != nil {
 		fmt.Printf("New round failed, %s\n", err)
 		return
@@ -51,7 +50,8 @@ func playerRoutine(p *gopoke.Player) {
 		case play := <-p.Plays:
 			fmt.Printf("%s: receive game play %v\n", p.Name, play)
 			if len(play.ValidActions) > 0 {
-				c := gopoke.Check{Player: p}
+				c := &gopoke.Check{}
+				c.SetPlayer(p)
 				fmt.Printf("%s: sending action %v\n", p.Name, c)
 				game.Action <- c
 			}
