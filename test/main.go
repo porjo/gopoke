@@ -12,7 +12,6 @@ var game *gopoke.Game
 var wg sync.WaitGroup
 
 func main() {
-
 	var err error
 	var players []gopoke.Player
 
@@ -22,9 +21,9 @@ func main() {
 	game.NewPlayer("jane")
 	game.NewPlayer("max")
 
-	players, err = game.NewRound()
+	players, err = game.Start()
 	if err != nil {
-		fmt.Printf("New round failed, %s\n", err)
+		fmt.Printf("Start game failed, %s\n", err)
 		return
 	}
 
@@ -41,22 +40,28 @@ func playerRoutine(p *gopoke.Player) {
 
 	defer wg.Done()
 
-	fmt.Printf("%s: entering loop\n", p.Name)
+	fmt.Printf("%s: entering loop\n", p.Name())
 
 	tickChan := time.NewTicker(time.Millisecond * 1000).C
 
 	for {
 		select {
-		case play := <-p.Plays:
-			fmt.Printf("%s: receive game play %v\n", p.Name, play)
+		case play := <-p.GamePlay:
+			if play.Player != nil {
+				fmt.Printf("%s: receive game play %s (%s)\n", p.Name(), play.Action, play.Player.Name())
+			} else {
+				fmt.Printf("%s: receive notify my turn\n", p.Name())
+			}
 			if len(play.ValidActions) > 0 {
-				c := &gopoke.Check{}
-				c.SetPlayer(p)
-				fmt.Printf("%s: sending action %v\n", p.Name, c)
-				game.Action <- c
+				newplay := gopoke.Play{}
+				newplay.Player = p
+				newplay.Action = gopoke.Raise
+				newplay.Amount = 5
+				fmt.Printf("%s: sending play %s\n", p.Name(), newplay.Action)
+				game.PlayerPlay <- newplay
 			}
 		case <-tickChan:
-			fmt.Printf("%s: tick\n", p.Name)
+			fmt.Printf("%s: tick\n", p.Name())
 
 		}
 	}
