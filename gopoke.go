@@ -23,7 +23,9 @@ const Allin Action = "All in"
 const StartingChips = 50
 
 type Game struct {
-	PlayerPlay  chan Play
+	// game reads player plays from this channel
+	PlayerPlay chan Play
+
 	pot         int
 	middlecards []Card
 	players     []Player
@@ -32,30 +34,44 @@ type Game struct {
 }
 
 type Player struct {
-	name     string
-	cards    []Card
-	chips    int
+	// player reads game plays from this channel
 	GamePlay chan Play
-	game     *Game
-	id       uuid.UUID
-	folded   bool
+
+	name   string
+	cards  []Card
+	chips  int
+	game   *Game
+	id     uuid.UUID
+	folded bool
 }
 
 type Play struct {
-	Player       *Player
-	Amount       int
-	Action       Action
+	// player making the play
+	Player *Player
+	// amount being bet
+	Amount int
+	// the action the player wants to take
+	Action Action
+	// actions that the player may take on their next turn
 	ValidActions []Action
 }
 
-type Round struct {
-	highbet   int
-	pot       int
+type round struct {
+	highbet int
+	pot     int
+	// dealer position
 	dealerIdx int
+	// position holding current high bid
+	bidderIdx int
 }
 
 type Card struct {
-	Suit  string
+	Suit string
+	// face cards have the following values:
+	//  - Jack  = 11
+	//  - Queen = 12
+	//  - King  = 13
+	//  - Ace   = 14
 	Value int
 }
 
@@ -89,10 +105,9 @@ func NewGame() *Game {
 }
 
 func (g *Game) gameRoutine() {
-	var round Round
+	var r round
 	var winner *Player
 	var nextPlay Play
-	round.dealerIdx = 0
 	// start game
 	fmt.Printf("Entering game routine\n")
 	fmt.Printf("------ Round %d -------\n", g.round)
@@ -110,7 +125,7 @@ func (g *Game) gameRoutine() {
 				break
 			}
 
-			fold := adjustPlay(&play, &round)
+			fold := g.adjustPlay(&play, &r)
 
 			if fold {
 				count := 0
@@ -122,7 +137,7 @@ func (g *Game) gameRoutine() {
 						// All other players folded, winner by default
 						fmt.Printf("game: %s is the winner by default\n", play.Player.name)
 						winner = &g.players[i]
-						goto done
+						goto endgame
 					}
 				}
 				play.Player.folded = true
@@ -141,31 +156,19 @@ func (g *Game) gameRoutine() {
 			}
 
 			// find this player
-			next := 0
-			for i, p := range g.players {
-				if uuid.Equal(p.id, play.Player.id) {
-					next = i
-				}
-			}
-
-			if next == round.dealerIdx {
-				// call/check finishes round
-				if play.Action == Call || play.Action == Check {
-					goto endround
-				}
-			}
+			next, _ := g.getPlayerIdx(play.Player)
 
 			// find next player
 			for {
 				next = (next + 1) % len(g.players)
-				if !g.players[next].folded {
-					break
-				}
-				if next == round.dealerIdx {
+				if next == r.bidderIdx {
 					// call/check finishes round
 					if play.Action == Call || play.Action == Check {
 						goto endround
 					}
+				}
+				if !g.players[next].folded {
+					break
 				}
 			}
 
@@ -173,9 +176,9 @@ func (g *Game) gameRoutine() {
 			nextPlay = Play{}
 
 			nextPlay.ValidActions = []Action{Fold, Allin}
-			if g.players[next].chips >= round.highbet {
+			if g.players[next].chips >= r.highbet {
 				nextPlay.ValidActions = append(nextPlay.ValidActions, Raise)
-				if round.highbet == 0 {
+				if r.highbet == 0 {
 					nextPlay.ValidActions = append(nextPlay.ValidActions, Check)
 				} else {
 					nextPlay.ValidActions = append(nextPlay.ValidActions, Call)
@@ -184,15 +187,18 @@ func (g *Game) gameRoutine() {
 
 			fmt.Printf("game notify next player, %s\n", g.players[next].name)
 			g.players[next].GamePlay <- nextPlay
+			continue
 
 		endround:
-			round.dealerIdx = (round.dealerIdx + 1) % len(g.players)
-			fmt.Printf("r:pot %d, g:pot %d\n", round.pot, g.pot)
-			g.pot += round.pot
-			round = Round{}
+			newDealer := (r.dealerIdx + 1) % len(g.players)
+			fmt.Printf("r:pot %d, g:pot %d\n", r.pot, g.pot)
+			g.pot += r.pot
+			r = round{}
+			r.dealerIdx = newDealer
+			r.bidderIdx = r.dealerIdx
 			g.round++
 			if g.round > 3 {
-				goto done
+				goto endgame
 			}
 
 			var card Card
@@ -217,12 +223,12 @@ func (g *Game) gameRoutine() {
 			nextPlay = Play{}
 
 			nextPlay.ValidActions = []Action{Fold, Allin, Check, Bet}
-			fmt.Printf("game notify next player, %s\n", g.players[round.dealerIdx].name)
-			g.players[round.dealerIdx].GamePlay <- nextPlay
+			fmt.Printf("game notify next player, %s\n", g.players[r.dealerIdx].name)
+			g.players[r.dealerIdx].GamePlay <- nextPlay
 		}
 	}
 
-done:
+endgame:
 
 	// work out the winner
 	if winner == nil {
@@ -232,7 +238,7 @@ done:
 	fmt.Printf("Ending game routine\n")
 }
 
-func adjustPlay(play *Play, round *Round) (fold bool) {
+func (g *Game) adjustPlay(play *Play, r *round) (fold bool) {
 	if play.Action == Fold {
 		return true
 	}
@@ -240,11 +246,10 @@ func adjustPlay(play *Play, round *Round) (fold bool) {
 		play.Amount = play.Player.chips
 	}
 
-	fmt.Printf("game2 read play %+v, player %+v\n", play, play.Player)
 	if play.Amount == 0 {
 		if play.Action != Fold {
 			play.Action = Check
-			if round.highbet > 0 {
+			if r.highbet > 0 {
 				play.Action = Fold
 				return true
 			}
@@ -252,21 +257,31 @@ func adjustPlay(play *Play, round *Round) (fold bool) {
 	} else if play.Amount == play.Player.chips {
 		play.Action = Allin
 
-	} else if play.Amount == round.highbet {
+	} else if play.Amount == r.highbet {
 		play.Action = Call
 
-	} else if play.Amount > round.highbet {
-		if round.highbet == 0 {
+	} else if play.Amount > r.highbet {
+		if r.highbet == 0 {
 			play.Action = Bet
 		} else {
 
 			play.Action = Raise
 		}
-		round.highbet = play.Amount
+		r.highbet = play.Amount
+		r.bidderIdx, _ = g.getPlayerIdx(play.Player)
 	}
 	play.Player.chips -= play.Amount
-	round.pot += play.Amount
+	r.pot += play.Amount
 	return false
+}
+
+func (g *Game) getPlayerIdx(player *Player) (int, error) {
+	for i, p := range g.players {
+		if uuid.Equal(p.id, player.id) {
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("player %s not found", player.name)
 }
 
 func (g *Game) Start() ([]Player, error) {
