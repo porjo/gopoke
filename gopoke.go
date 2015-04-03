@@ -79,8 +79,24 @@ func init() {
 	rand.Seed(time.Now().UTC().UnixNano())
 }
 
+// get player's name
 func (p Player) Name() string {
 	return p.name
+}
+
+// get player's cards
+func (p Player) Cards() []Card {
+	return p.cards
+}
+
+// get player's chips amount
+func (p Player) Chips() int {
+	return p.chips
+}
+
+// returns whether the player has folded or not
+func (p Player) Folded() bool {
+	return p.folded
 }
 
 func NewGame() *Game {
@@ -110,7 +126,7 @@ func (g *Game) gameRoutine() {
 	var nextPlay Play
 	// start game
 	fmt.Printf("Entering game routine\n")
-	fmt.Printf("------ Round %d -------\n", g.round)
+	fmt.Printf("------ Round %d ------- %v\n", g.round, g.middlecards)
 	// signal first player
 	play := Play{}
 	play.ValidActions = []Action{Check, Fold}
@@ -119,28 +135,26 @@ func (g *Game) gameRoutine() {
 	for {
 		select {
 		case play = <-g.PlayerPlay:
-			fmt.Printf("game read play %+v\n", play)
+			fmt.Printf("game read play %+v (%v)\n", play, play.Player)
 			if play.Player.folded {
 				fmt.Printf("game: folded player %s tried to play!? Ignoring\n", play.Player.name)
 				break
 			}
 
-			fold := g.adjustPlay(&play, &r)
+			g.adjustPlay(&play, &r)
 
-			if fold {
-				count := 0
-				for i, p := range g.players {
-					if p.folded {
-						count++
-					}
-					if count == len(g.players)-1 {
-						// All other players folded, winner by default
-						fmt.Printf("game: %s is the winner by default\n", play.Player.name)
-						winner = &g.players[i]
-						goto endgame
-					}
+			if play.Action == Fold {
+				n1, err := g.getNextPlayerIdx(play.Player)
+				if err != nil {
+					panic(err)
 				}
-				play.Player.folded = true
+				n2, _ := g.getNextPlayerIdx(&g.players[n1])
+
+				if n1 == n2 {
+					fmt.Printf("game: %s is the winner by default (others folded)\n", g.players[n1].name)
+					winner = &g.players[n1]
+					goto endgame
+				}
 			}
 
 			fmt.Printf("game: play %s FROM %s, amount %d\n", play.Action, play.Player.name, play.Amount)
@@ -155,76 +169,82 @@ func (g *Game) gameRoutine() {
 
 			}
 
-			// find this player
-			next, _ := g.getPlayerIdx(play.Player)
+			next, err := g.getNextPlayerIdx(play.Player)
+			if err != nil {
+				panic(err)
+			}
 
-			// find next player
-			for {
-				next = (next + 1) % len(g.players)
-				if next == r.bidderIdx {
-					// call/check finishes round
-					if play.Action == Call || play.Action == Check {
-						goto endround
-					}
-				}
-				if !g.players[next].folded {
-					break
-				}
+			fmt.Printf("game, next %s bidder %s\n", g.players[next].name, g.players[r.bidderIdx].name)
+			if next == r.bidderIdx {
+				fmt.Printf("game, bidder's return, endgame %v\n", g.players[next])
+				goto endround
 			}
 
 			// notify next player
 			nextPlay = Play{}
 
 			nextPlay.ValidActions = []Action{Fold, Allin}
-			if g.players[next].chips >= r.highbet {
-				nextPlay.ValidActions = append(nextPlay.ValidActions, Raise)
+			if g.players[next].chips > r.highbet {
 				if r.highbet == 0 {
 					nextPlay.ValidActions = append(nextPlay.ValidActions, Check)
 				} else {
-					nextPlay.ValidActions = append(nextPlay.ValidActions, Call)
+					nextPlay.ValidActions = append(nextPlay.ValidActions, Call, Raise)
 				}
 			}
 
-			fmt.Printf("game notify next player, %s\n", g.players[next].name)
+			fmt.Printf("game notify next player, %v\n", g.players[next])
 			g.players[next].GamePlay <- nextPlay
 			continue
 
 		endround:
-			newDealer := (r.dealerIdx + 1) % len(g.players)
+			r.dealerIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
+			if err != nil {
+				panic(err)
+			}
 			fmt.Printf("r:pot %d, g:pot %d\n", r.pot, g.pot)
 			g.pot += r.pot
 			r = round{}
-			r.dealerIdx = newDealer
-			r.bidderIdx = r.dealerIdx
-			g.round++
-			if g.round > 3 {
-				goto endgame
+			r.bidderIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
+			if err != nil {
+				panic(err)
 			}
 
-			var card Card
-			if g.round == 1 {
+			for {
+				g.round++
+				if g.round > 3 {
+					goto endgame
+				}
+
+				var card Card
+				if g.round == 1 {
+					// burn
+					_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+					// the flop
+					for i := 0; i < 2; i++ {
+						card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+						g.middlecards = append(g.middlecards, card)
+					}
+				}
+
 				// burn
 				_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-				// the flop
-				for i := 0; i < 3; i++ {
-					card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-					g.middlecards = append(g.middlecards, card)
-				}
-			}
+				// turn/river
+				card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+				g.middlecards = append(g.middlecards, card)
+				fmt.Printf("------ Round %d ------- %v\n", g.round, g.middlecards)
 
-			// burn
-			_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-			// turn/river
-			card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-			g.middlecards = append(g.middlecards, card)
-			fmt.Printf("------ Round %d -------\n", g.round)
+				if r.bidderIdx != r.dealerIdx {
+					break
+				}
+				// if all players are All-in, then loop
+			}
 
 			// First play of new round
 			nextPlay = Play{}
 
 			nextPlay.ValidActions = []Action{Fold, Allin, Check, Bet}
-			fmt.Printf("game notify next player, %s\n", g.players[r.dealerIdx].name)
-			g.players[r.dealerIdx].GamePlay <- nextPlay
+			fmt.Printf("game notify next player, %s\n", g.players[r.bidderIdx].name)
+			g.players[r.bidderIdx].GamePlay <- nextPlay
 		}
 	}
 
@@ -238,10 +258,15 @@ endgame:
 	fmt.Printf("Ending game routine\n")
 }
 
-func (g *Game) adjustPlay(play *Play, r *round) (fold bool) {
+func (g *Game) adjustPlay(play *Play, r *round) {
 	if play.Action == Fold {
-		return true
+		play.Player.folded = true
+		return
 	}
+	if play.Action == Check {
+		return
+	}
+
 	if play.Amount > play.Player.chips {
 		play.Amount = play.Player.chips
 	}
@@ -251,28 +276,28 @@ func (g *Game) adjustPlay(play *Play, r *round) (fold bool) {
 			play.Action = Check
 			if r.highbet > 0 {
 				play.Action = Fold
-				return true
+				play.Player.folded = true
+				return
 			}
 		}
-	} else if play.Amount == play.Player.chips {
-		play.Action = Allin
-
-	} else if play.Amount == r.highbet {
-		play.Action = Call
-
-	} else if play.Amount > r.highbet {
-		if r.highbet == 0 {
-			play.Action = Bet
-		} else {
-
-			play.Action = Raise
+	} else {
+		if play.Amount == play.Player.chips {
+			play.Action = Allin
+		} else if play.Amount == r.highbet {
+			play.Action = Call
+			if r.highbet == 0 {
+				play.Action = Bet
+			} else {
+				play.Action = Raise
+			}
 		}
-		r.highbet = play.Amount
-		r.bidderIdx, _ = g.getPlayerIdx(play.Player)
+		if play.Amount >= r.highbet {
+			r.highbet = play.Amount
+			r.bidderIdx, _ = g.getPlayerIdx(play.Player)
+		}
 	}
 	play.Player.chips -= play.Amount
 	r.pot += play.Amount
-	return false
 }
 
 func (g *Game) getPlayerIdx(player *Player) (int, error) {
@@ -284,27 +309,58 @@ func (g *Game) getPlayerIdx(player *Player) (int, error) {
 	return 0, fmt.Errorf("player %s not found", player.name)
 }
 
-func (g *Game) Start() ([]Player, error) {
+// get next non-folded player with chips > 0
+// otherwise return current player
+func (g *Game) getNextPlayerIdx(player *Player) (int, error) {
+	var found bool
+	var current, next int
+	for i, p := range g.players {
+		if uuid.Equal(p.id, player.id) {
+			current = i
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return 0, fmt.Errorf("player %s not found", player.name)
+
+	}
+
+	next = current
+	for {
+		next = (next + 1) % len(g.players)
+		if !g.players[next].folded && g.players[next].chips > 0 {
+			break
+		}
+		if next == current {
+			break
+		}
+	}
+	return next, nil
+}
+
+func (g *Game) Start() ([]*Player, error) {
 
 	if len(g.players) == 0 {
 		return nil, fmt.Errorf("Please create players first")
 	}
 
-	var playersOut []Player
+	var playersOut []*Player
 	var card Card
 	g.PlayerPlay = make(chan Play, len(g.players))
 	// first card
-	for _, p := range g.players {
-		p.cards = make([]Card, 0)
+	for i, _ := range g.players {
+		g.players[i].cards = make([]Card, 0)
 		card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-		p.cards = append(p.cards, card)
+		g.players[i].cards = append(g.players[i].cards, card)
 	}
 
 	// second card
-	for _, p := range g.players {
+	for i, _ := range g.players {
 		card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-		p.cards = append(p.cards, card)
-		playersOut = append(playersOut, p)
+		g.players[i].cards = append(g.players[i].cards, card)
+		playersOut = append(playersOut, &g.players[i])
 	}
 	go g.gameRoutine()
 	return playersOut, nil

@@ -14,7 +14,7 @@ var wg sync.WaitGroup
 
 func main() {
 	var err error
-	var players []gopoke.Player
+	var players []*gopoke.Player
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -32,7 +32,7 @@ func main() {
 
 	for i, _ := range players {
 		wg.Add(1)
-		go playerRoutine(&players[i])
+		go playerRoutine(players[i])
 	}
 
 	fmt.Printf("waiting for players...\n")
@@ -54,15 +54,17 @@ func playerRoutine(p *gopoke.Player) {
 			if play.Player != nil {
 				fmt.Printf("%s: receive game play %s (%s)\n", p.Name(), play.Action, play.Player.Name())
 			} else {
-				fmt.Printf("%s: receive notify my turn\n", p.Name())
+				fmt.Printf("%s: receive notify my turn: %v\n", p.Name(), play.ValidActions)
 			}
 			if len(play.ValidActions) > 0 {
-				idxs := rand.Perm(len(play.ValidActions))
+				//idxs := rand.Perm(len(play.ValidActions))
 
 				newplay := gopoke.Play{}
 				newplay.Player = p
-				newplay.Action = play.ValidActions[idxs[0]]
-				newplay.Amount = 15
+				//newplay.Action = play.ValidActions[idxs[0]]
+				newplay.Action = gopoke.Allin
+				//newplay.Amount = 15
+				newplay.Amount = 50
 				fmt.Printf("%s: sending play %s\n", p.Name(), newplay.Action)
 				game.PlayerPlay <- newplay
 			}
