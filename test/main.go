@@ -23,6 +23,7 @@ func main() {
 	game.NewPlayer("bob")
 	game.NewPlayer("jane")
 	game.NewPlayer("max")
+	game.NewPlayer("liz")
 
 	players, err = game.Start()
 	if err != nil {

@@ -3,10 +3,13 @@ package gopoke
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	"code.google.com/p/go-uuid/uuid"
 )
+
+var suitWeight = map[string]int{"Spades": 0, "Clubs": 1, "Diamonds": 2, "Hearts": 3}
 
 var suits = [...]string{"Diamonds", "Spades", "Hearts", "Clubs"}
 var suitVals = [...]int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
@@ -74,6 +77,9 @@ type Card struct {
 	//  - Ace   = 14
 	Value int
 }
+
+type byValue []Card
+type bySuit []Card
 
 func init() {
 	rand.Seed(time.Now().UTC().UnixNano())
@@ -253,9 +259,90 @@ endgame:
 	// work out the winner
 	if winner == nil {
 
+		for _, p := range g.players {
+			if p.folded {
+				continue
+			}
+
+			hand := append(p.cards, g.middlecards...)
+			sort.Sort(bySuit(hand))
+			fmt.Printf("game: %s suit hand %v\n", p.name, hand)
+			sort.Sort(byValue(hand))
+			fmt.Printf("game: %s straight hand %v\n", p.name, hand)
+
+			if isFlush(hand) {
+				fmt.Printf("hand is flush %v\n", hand)
+			}
+			if isStraight(hand) {
+				fmt.Printf("hand is straight %v\n", hand)
+			}
+		}
+
 	}
+
 	fmt.Printf("Winner is %v\n", winner)
 	fmt.Printf("Ending game routine\n")
+}
+
+func isFlush(hand []Card) bool {
+	flush := true
+	sort.Sort(bySuit(hand))
+	suit := hand[0].Suit
+	for i := 1; i < 5; i++ {
+		if hand[i].Suit != suit {
+			flush = false
+		}
+	}
+
+	// check reverse order
+	if !flush {
+		sort.Sort(sort.Reverse(bySuit(hand)))
+		suit := hand[0].Suit
+		for i := 1; i < 5; i++ {
+			if hand[i].Suit != suit {
+				flush = false
+			}
+		}
+	}
+
+	return flush
+}
+
+func isStraight(hand []Card) bool {
+	sort.Sort(byValue(hand))
+
+	if len(hand) > 5 {
+		// remove duplicates
+		newhand := make([]Card, len(hand))
+		copy(newhand, hand)
+		m := map[int]bool{}
+		for _, v := range newhand {
+			if _, seen := m[v.Value]; !seen {
+				newhand[len(m)] = v
+				m[v.Value] = true
+			}
+		}
+		newhand = newhand[:len(m)]
+
+		// split cards into 5's then run through isStraight again
+		rounds := len(newhand) - 4
+		for i := 0; i < rounds; i++ {
+			if isStraight(newhand[i : i+5]) {
+				return true
+			}
+		}
+	}
+
+	straight := true
+	last := hand[0].Value
+	for i := 1; i < 5; i++ {
+		if last-hand[i].Value != 1 {
+			straight = false
+		}
+		last = hand[i].Value
+	}
+
+	return straight
 }
 
 func (g *Game) adjustPlay(play *Play, r *round) {
@@ -341,7 +428,6 @@ func (g *Game) getNextPlayerIdx(player *Player) (int, error) {
 }
 
 func (g *Game) Start() ([]*Player, error) {
-
 	if len(g.players) == 0 {
 		return nil, fmt.Errorf("Please create players first")
 	}
@@ -373,4 +459,26 @@ func (g *Game) NewPlayer(name string) error {
 	p.id = uuid.NewRandom()
 	g.players = append(g.players, p)
 	return nil
+}
+
+func (a byValue) Len() int { return len(a) }
+
+func (a byValue) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+func (a byValue) Less(i, j int) bool {
+	return a[i].Value > a[j].Value
+}
+
+func (a bySuit) Len() int { return len(a) }
+
+func (a bySuit) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+func (a bySuit) Less(i, j int) bool {
+	if suitWeight[a[i].Suit] == suitWeight[a[j].Suit] {
+		return a[i].Value > a[j].Value
+	} else {
+		return suitWeight[a[i].Suit] > suitWeight[a[j].Suit]
+	}
 }
