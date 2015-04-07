@@ -34,6 +34,7 @@ type Game struct {
 	players     []Player
 	cards       []Card
 	round       int
+	winner      *Player
 }
 
 type Player struct {
@@ -76,6 +77,12 @@ type Card struct {
 	//  - King  = 13
 	//  - Ace   = 14
 	Value int
+}
+
+// pair, threes, fours
+type commonCard struct {
+	card  Card
+	count int
 }
 
 type byValue []Card
@@ -128,8 +135,6 @@ func NewGame() *Game {
 
 func (g *Game) gameRoutine() {
 	var r round
-	var winner *Player
-	var nextPlay Play
 	// start game
 	fmt.Printf("Entering game routine\n")
 	fmt.Printf("------ Round %d ------- %v\n", g.round, g.middlecards)
@@ -141,123 +146,15 @@ func (g *Game) gameRoutine() {
 	for {
 		select {
 		case play = <-g.PlayerPlay:
-			fmt.Printf("game read play %+v (%v)\n", play, play.Player)
-			if play.Player.folded {
-				fmt.Printf("game: folded player %s tried to play!? Ignoring\n", play.Player.name)
-				break
+			if end := g.gamePlay(play, r); end {
+				goto endgame
 			}
-
-			g.adjustPlay(&play, &r)
-
-			if play.Action == Fold {
-				n1, err := g.getNextPlayerIdx(play.Player)
-				if err != nil {
-					panic(err)
-				}
-				n2, _ := g.getNextPlayerIdx(&g.players[n1])
-
-				if n1 == n2 {
-					fmt.Printf("game: %s is the winner by default (others folded)\n", g.players[n1].name)
-					winner = &g.players[n1]
-					goto endgame
-				}
-			}
-
-			fmt.Printf("game: play %s FROM %s, amount %d\n", play.Action, play.Player.name, play.Amount)
-
-			// broadcast last action to all other players
-			for i, p := range g.players {
-
-				if !uuid.Equal(p.id, play.Player.id) {
-					fmt.Printf("game: play %s TO %s\n", play.Action, p.name)
-					g.players[i].GamePlay <- play
-				}
-
-			}
-
-			next, err := g.getNextPlayerIdx(play.Player)
-			if err != nil {
-				panic(err)
-			}
-
-			fmt.Printf("game, next %s bidder %s\n", g.players[next].name, g.players[r.bidderIdx].name)
-			if next == r.bidderIdx {
-				fmt.Printf("game, bidder's return, endgame %v\n", g.players[next])
-				goto endround
-			}
-
-			// notify next player
-			nextPlay = Play{}
-
-			nextPlay.ValidActions = []Action{Fold, Allin}
-			if g.players[next].chips > r.highbet {
-				if r.highbet == 0 {
-					nextPlay.ValidActions = append(nextPlay.ValidActions, Check)
-				} else {
-					nextPlay.ValidActions = append(nextPlay.ValidActions, Call, Raise)
-				}
-			}
-
-			fmt.Printf("game notify next player, %v\n", g.players[next])
-			g.players[next].GamePlay <- nextPlay
-			continue
-
-		endround:
-			r.dealerIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
-			if err != nil {
-				panic(err)
-			}
-			fmt.Printf("r:pot %d, g:pot %d\n", r.pot, g.pot)
-			g.pot += r.pot
-			r = round{}
-			r.bidderIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
-			if err != nil {
-				panic(err)
-			}
-
-			for {
-				g.round++
-				if g.round > 3 {
-					goto endgame
-				}
-
-				var card Card
-				if g.round == 1 {
-					// burn
-					_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-					// the flop
-					for i := 0; i < 2; i++ {
-						card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-						g.middlecards = append(g.middlecards, card)
-					}
-				}
-
-				// burn
-				_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-				// turn/river
-				card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
-				g.middlecards = append(g.middlecards, card)
-				fmt.Printf("------ Round %d ------- %v\n", g.round, g.middlecards)
-
-				if r.bidderIdx != r.dealerIdx {
-					break
-				}
-				// if all players are All-in, then loop
-			}
-
-			// First play of new round
-			nextPlay = Play{}
-
-			nextPlay.ValidActions = []Action{Fold, Allin, Check, Bet}
-			fmt.Printf("game notify next player, %s\n", g.players[r.bidderIdx].name)
-			g.players[r.bidderIdx].GamePlay <- nextPlay
 		}
 	}
 
 endgame:
-
 	// work out the winner
-	if winner == nil {
+	if g.winner == nil {
 
 		for _, p := range g.players {
 			if p.folded {
@@ -276,12 +173,146 @@ endgame:
 			if isStraight(hand) {
 				fmt.Printf("hand is straight %v\n", hand)
 			}
+			c1, c2 := countKind(hand)
+			if c1.count > 1 && c2.count == 0 {
+				switch c1.count {
+				case 2:
+					fmt.Printf("hand is a pair %v\n", c1)
+				case 3:
+					fmt.Printf("hand is 3 of a kind %v\n", c1)
+				case 4:
+					fmt.Printf("hand is 4 of a kind %v\n", c1)
+				}
+			}
+			if c1.count > 1 && c2.count > 1 {
+				if (c1.count == 2 && c2.count == 3) || (c1.count == 3 && c2.count == 2) {
+					fmt.Printf("hand is full house %v, %v\n", c1, c2)
+				} else {
+					fmt.Printf("hand is 2 pairs %v, %v\n", c1, c2)
+				}
+			}
 		}
 
 	}
 
-	fmt.Printf("Winner is %v\n", winner)
+	fmt.Printf("Winner is %v\n", g.winner)
 	fmt.Printf("Ending game routine\n")
+}
+
+func (g *Game) gamePlay(play Play, r round) bool {
+	var nextPlay Play
+	fmt.Printf("game read play %+v (%v)\n", play, play.Player)
+	if play.Player.folded {
+		fmt.Printf("game: folded player %s tried to play!? Ignoring\n", play.Player.name)
+		return false
+	}
+
+	g.adjustPlay(&play, &r)
+
+	if play.Action == Fold {
+		n1, err := g.getNextPlayerIdx(play.Player)
+		if err != nil {
+			panic(err)
+		}
+		n2, _ := g.getNextPlayerIdx(&g.players[n1])
+
+		if n1 == n2 {
+			fmt.Printf("game: %s is the winner by default (others folded)\n", g.players[n1].name)
+			g.winner = &g.players[n1]
+			return true
+		}
+	}
+
+	fmt.Printf("game: play %s FROM %s, amount %d\n", play.Action, play.Player.name, play.Amount)
+
+	// broadcast last action to all other players
+	for i, p := range g.players {
+
+		if !uuid.Equal(p.id, play.Player.id) {
+			fmt.Printf("game: play %s TO %s\n", play.Action, p.name)
+			g.players[i].GamePlay <- play
+		}
+
+	}
+
+	next, err := g.getNextPlayerIdx(play.Player)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("game, next %s bidder %s\n", g.players[next].name, g.players[r.bidderIdx].name)
+	if next == r.bidderIdx {
+		fmt.Printf("game, bidder's return, endgame %v\n", g.players[next])
+		goto endround
+	}
+
+	// notify next player
+	nextPlay = Play{}
+
+	nextPlay.ValidActions = []Action{Fold, Allin}
+	if g.players[next].chips > r.highbet {
+		if r.highbet == 0 {
+			nextPlay.ValidActions = append(nextPlay.ValidActions, Check)
+		} else {
+			nextPlay.ValidActions = append(nextPlay.ValidActions, Call, Raise)
+		}
+	}
+
+	fmt.Printf("game notify next player, %v\n", g.players[next])
+	g.players[next].GamePlay <- nextPlay
+	return false
+
+endround:
+	r.dealerIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("r:pot %d, g:pot %d\n", r.pot, g.pot)
+	g.pot += r.pot
+	r = round{}
+	r.bidderIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
+	if err != nil {
+		panic(err)
+	}
+
+	for {
+		g.round++
+		if g.round > 3 {
+			return true
+		}
+
+		var card Card
+		if g.round == 1 {
+			// burn
+			_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+			// the flop
+			for i := 0; i < 2; i++ {
+				card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+				g.middlecards = append(g.middlecards, card)
+			}
+		}
+
+		// burn
+		_, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+		// turn/river
+		card, g.cards = g.cards[len(g.cards)-1], g.cards[:len(g.cards)-1]
+		g.middlecards = append(g.middlecards, card)
+		fmt.Printf("------ Round %d ------- %v\n", g.round, g.middlecards)
+
+		if r.bidderIdx != r.dealerIdx {
+			break
+		}
+		// if all players are All-in, then loop
+	}
+
+	// First play of new round
+	nextPlay = Play{}
+
+	nextPlay.ValidActions = []Action{Fold, Allin, Check, Bet}
+	fmt.Printf("game notify next player, %s\n", g.players[r.bidderIdx].name)
+	g.players[r.bidderIdx].GamePlay <- nextPlay
+
+	return false
 }
 
 func isFlush(hand []Card) bool {
@@ -312,11 +343,15 @@ func isStraight(hand []Card) bool {
 	sort.Sort(byValue(hand))
 
 	if len(hand) > 5 {
-		// remove duplicates
+		// remove duplicate values
 		newhand := make([]Card, len(hand))
 		copy(newhand, hand)
 		m := map[int]bool{}
 		for _, v := range newhand {
+			// if high Ace, then include low ace for the 'wheel'
+			if v.Value == 14 {
+				newhand = append(newhand, Card{Suit: v.Suit, Value: 0})
+			}
 			if _, seen := m[v.Value]; !seen {
 				newhand[len(m)] = v
 				m[v.Value] = true
@@ -343,6 +378,27 @@ func isStraight(hand []Card) bool {
 	}
 
 	return straight
+}
+
+func countKind(hand []Card) (c1 commonCard, c2 commonCard) {
+	sort.Sort(byValue(hand))
+
+	m := map[int]int{}
+	for _, v := range hand {
+		m[v.Value]++
+	}
+
+	for k, v := range m {
+		if (k == c1.card.Value || c1.card.Value == 0) && v > c1.count {
+			c1.card.Value = k
+			c1.count = v
+		} else if v > c2.count {
+			c2.card.Value = k
+			c2.count = v
+		}
+	}
+
+	return
 }
 
 func (g *Game) adjustPlay(play *Play, r *round) {
