@@ -6,13 +6,13 @@ import (
 	"sort"
 	"time"
 
-	"code.google.com/p/go-uuid/uuid"
+	"github.com/pborman/uuid"
 )
 
 var suitWeight = map[string]int{"Spades": 0, "Clubs": 1, "Diamonds": 2, "Hearts": 3}
 
-var suits = [...]string{"Diamonds", "Spades", "Hearts", "Clubs"}
-var suitVals = [...]int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
+var suits = []string{"Diamonds", "Spades", "Hearts", "Clubs"}
+var suitVals = []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
 
 type Action string
 
@@ -41,12 +41,13 @@ type Player struct {
 	// player reads game plays from this channel
 	GamePlay chan Play
 
-	name   string
-	cards  []Card
-	chips  int
-	game   *Game
-	id     uuid.UUID
-	folded bool
+	name          string
+	cards         []Card
+	chips         int
+	game          *Game
+	id            uuid.UUID
+	folded        bool
+	currentAction Action
 }
 
 type Play struct {
@@ -112,27 +113,6 @@ func (p Player) Folded() bool {
 	return p.folded
 }
 
-func NewGame() *Game {
-	var card Card
-	g := &Game{}
-
-	for _, suit := range suits {
-		for _, val := range suitVals {
-			card = Card{Suit: suit, Value: val}
-			g.cards = append(g.cards, card)
-		}
-	}
-
-	var shuffled []Card
-	for _, idx := range rand.Perm(len(g.cards)) {
-		shuffled = append(shuffled, g.cards[idx])
-	}
-
-	g.cards = shuffled
-
-	return g
-}
-
 func (g *Game) gameRoutine() {
 	var r round
 	// start game
@@ -140,19 +120,20 @@ func (g *Game) gameRoutine() {
 	fmt.Printf("------ Round %d ------- %v\n", g.round, g.middlecards)
 	// signal first player
 	play := Play{}
-	play.ValidActions = []Action{Check, Fold}
+	play.ValidActions = []Action{Allin, Check, Bet, Fold}
 	fmt.Printf("game notify next player, %s\n", g.players[1].name)
 	g.players[1].GamePlay <- play
 	for {
 		select {
 		case play = <-g.PlayerPlay:
-			if end := g.gamePlay(play, r); end {
-				goto endgame
+			if end := g.gamePlay(play, &r); end {
+				g.endGame()
 			}
 		}
 	}
+}
 
-endgame:
+func (g *Game) endGame() {
 	// work out the winner
 	if g.winner == nil {
 
@@ -199,7 +180,7 @@ endgame:
 	fmt.Printf("Ending game routine\n")
 }
 
-func (g *Game) gamePlay(play Play, r round) bool {
+func (g *Game) gamePlay(play Play, r *round) bool {
 	var nextPlay Play
 	fmt.Printf("game read play %+v (%v)\n", play, play.Player)
 	if play.Player.folded {
@@ -207,14 +188,14 @@ func (g *Game) gamePlay(play Play, r round) bool {
 		return false
 	}
 
-	g.adjustPlay(&play, &r)
+	g.adjustPlay(&play, r)
 
 	if play.Action == Fold {
-		n1, err := g.getNextPlayerIdx(play.Player)
+		n1, err := g.getNextPlayerIdx(*play.Player)
 		if err != nil {
 			panic(err)
 		}
-		n2, _ := g.getNextPlayerIdx(&g.players[n1])
+		n2, _ := g.getNextPlayerIdx(g.players[n1])
 
 		if n1 == n2 {
 			fmt.Printf("game: %s is the winner by default (others folded)\n", g.players[n1].name)
@@ -235,21 +216,24 @@ func (g *Game) gamePlay(play Play, r round) bool {
 
 	}
 
-	next, err := g.getNextPlayerIdx(play.Player)
+	next, err := g.getNextPlayerIdx(*play.Player)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("game, next %s bidder %s\n", g.players[next].name, g.players[r.bidderIdx].name)
+	fmt.Printf("game, next %s, bidder %s, dealer %s\n", g.players[next].name, g.players[r.bidderIdx].name, g.players[r.dealerIdx].name)
 	if next == r.bidderIdx {
-		fmt.Printf("game, bidder's return, endgame %v\n", g.players[next])
-		goto endround
+		fmt.Printf("game, bidder's return, endround %v\n", g.players[next])
+		return g.endRound(*r)
 	}
 
 	// notify next player
 	nextPlay = Play{}
 
-	nextPlay.ValidActions = []Action{Fold, Allin}
+	nextPlay.ValidActions = []Action{Fold}
+	if g.players[next].chips > 0 {
+		nextPlay.ValidActions = append(nextPlay.ValidActions, Allin)
+	}
 	if g.players[next].chips > r.highbet {
 		if r.highbet == 0 {
 			nextPlay.ValidActions = append(nextPlay.ValidActions, Check)
@@ -261,21 +245,30 @@ func (g *Game) gamePlay(play Play, r round) bool {
 	fmt.Printf("game notify next player, %v\n", g.players[next])
 	g.players[next].GamePlay <- nextPlay
 	return false
+}
 
-endround:
-	r.dealerIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("r:pot %d, g:pot %d\n", r.pot, g.pot)
-	g.pot += r.pot
-	r = round{}
-	r.bidderIdx, err = g.getNextPlayerIdx(&g.players[r.dealerIdx])
-	if err != nil {
-		panic(err)
-	}
+func (g *Game) endRound(r round) bool {
+	var err error
+	var dealerIdx, bidderIdx int
 
 	for {
+		dealerIdx, err = g.getNextPlayerIdx(g.players[r.dealerIdx])
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("r:pot %d, g:pot %d\n", r.pot, g.pot)
+		g.pot += r.pot
+		bidderIdx, err = g.getNextPlayerIdx(g.players[dealerIdx])
+		if err != nil {
+			panic(err)
+		}
+
+		// new round
+		r = round{}
+		r.bidderIdx = bidderIdx
+		r.dealerIdx = dealerIdx
+
+		time.Sleep(time.Millisecond * 200)
 		g.round++
 		if g.round > 3 {
 			return true
@@ -306,7 +299,7 @@ endround:
 	}
 
 	// First play of new round
-	nextPlay = Play{}
+	nextPlay := Play{}
 
 	nextPlay.ValidActions = []Action{Fold, Allin, Check, Bet}
 	fmt.Printf("game notify next player, %s\n", g.players[r.bidderIdx].name)
@@ -406,9 +399,6 @@ func (g *Game) adjustPlay(play *Play, r *round) {
 		play.Player.folded = true
 		return
 	}
-	if play.Action == Check {
-		return
-	}
 
 	if play.Amount > play.Player.chips {
 		play.Amount = play.Player.chips
@@ -422,24 +412,35 @@ func (g *Game) adjustPlay(play *Play, r *round) {
 				play.Player.folded = true
 				return
 			}
+			fmt.Printf("game new high bidder, %s - %d\n", g.players[r.bidderIdx].name, r.highbet)
 		}
 	} else {
-		if play.Amount == play.Player.chips {
-			play.Action = Allin
-		} else if play.Amount == r.highbet {
-			play.Action = Call
-			if r.highbet == 0 {
-				play.Action = Bet
-			} else {
-				play.Action = Raise
-			}
-		}
-		if play.Amount >= r.highbet {
+		if r.highbet == 0 {
+			play.Action = Bet
 			r.highbet = play.Amount
 			r.bidderIdx, _ = g.getPlayerIdx(play.Player)
+			fmt.Printf("game new high bidder, %s - %d\n", g.players[r.bidderIdx].name, r.highbet)
+		} else {
+			if play.Amount == r.highbet {
+				play.Action = Call
+				fmt.Printf("game new high bidder, %s - %d\n", g.players[r.bidderIdx].name, r.highbet)
+			} else if play.Amount > r.highbet {
+				play.Action = Raise
+				r.highbet = play.Amount
+				r.bidderIdx, _ = g.getPlayerIdx(play.Player)
+				fmt.Printf("game new high bidder, %s - %d\n", g.players[r.bidderIdx].name, r.highbet)
+			}
+		}
+
+		if play.Amount == play.Player.chips {
+			play.Action = Allin
+		} else if play.Amount < r.highbet {
+			play.Player.folded = true
+			return
 		}
 	}
 	play.Player.chips -= play.Amount
+	play.Player.currentAction = play.Action
 	r.pot += play.Amount
 }
 
@@ -452,9 +453,9 @@ func (g *Game) getPlayerIdx(player *Player) (int, error) {
 	return 0, fmt.Errorf("player %s not found", player.name)
 }
 
-// get next non-folded player with chips > 0
+// get next non-folded player who is either 'all-in' or with chips > 0
 // otherwise return current player
-func (g *Game) getNextPlayerIdx(player *Player) (int, error) {
+func (g *Game) getNextPlayerIdx(player Player) (int, error) {
 	var found bool
 	var current, next int
 	for i, p := range g.players {
@@ -473,7 +474,7 @@ func (g *Game) getNextPlayerIdx(player *Player) (int, error) {
 	next = current
 	for {
 		next = (next + 1) % len(g.players)
-		if !g.players[next].folded && g.players[next].chips > 0 {
+		if !g.players[next].folded && (g.players[next].currentAction == Allin || g.players[next].chips > 0) {
 			break
 		}
 		if next == current {
@@ -490,7 +491,21 @@ func (g *Game) Start() ([]*Player, error) {
 
 	var playersOut []*Player
 	var card Card
+	var shuffled []Card
 	g.PlayerPlay = make(chan Play, len(g.players))
+
+	for _, suit := range suits {
+		for _, val := range suitVals {
+			card = Card{Suit: suit, Value: val}
+			g.cards = append(g.cards, card)
+		}
+	}
+
+	for _, idx := range rand.Perm(len(g.cards)) {
+		shuffled = append(shuffled, g.cards[idx])
+	}
+
+	g.cards = shuffled
 	// first card
 	for i, _ := range g.players {
 		g.players[i].cards = make([]Card, 0)

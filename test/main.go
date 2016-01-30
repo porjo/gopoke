@@ -18,7 +18,7 @@ func main() {
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	game = gopoke.NewGame()
+	game = &gopoke.Game{}
 
 	game.NewPlayer("bob")
 	game.NewPlayer("jane")
@@ -58,14 +58,19 @@ func playerRoutine(p *gopoke.Player) {
 				fmt.Printf("%s: receive notify my turn: %v\n", p.Name(), play.ValidActions)
 			}
 			if len(play.ValidActions) > 0 {
-				//idxs := rand.Perm(len(play.ValidActions))
+				idxs := rand.Perm(len(play.ValidActions))
 
 				newplay := gopoke.Play{}
 				newplay.Player = p
-				//newplay.Action = play.ValidActions[idxs[0]]
-				newplay.Action = gopoke.Allin
-				//newplay.Amount = 15
-				newplay.Amount = 50
+				newplay.Action = play.ValidActions[idxs[0]]
+				//newplay.Action = gopoke.Allin
+				if newplay.Action == gopoke.Allin {
+					newplay.Amount = p.Chips()
+				} else {
+					newplay.Amount = 15
+				}
+				//newplay.Amount = 50
+				time.Sleep(time.Millisecond * 200)
 				fmt.Printf("%s: sending play %s\n", p.Name(), newplay.Action)
 				game.PlayerPlay <- newplay
 			}
